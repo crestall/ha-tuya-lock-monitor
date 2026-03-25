@@ -33,10 +33,9 @@ Talk directly to the lock over your local network. No Tuya IoT Platform account 
 **What you need:**
 | Item | How to find it |
 |---|---|
-| Device ID | Tuya/Smart Life app → device details, or tinytuya wizard |
 | Local Key | See below |
-| Device IP | Router DHCP client table |
-| Protocol version | Usually `3.4` — try `3.3` or `3.5` if it doesn't connect |
+
+> **Device ID and IP are found automatically** by the built-in network scanner — just select "Scan network" during setup and pick your lock from the list.
 
 **How to get the local key** (one-time):
 - **Option A — tinytuya wizard:** Install tinytuya (`pip install tinytuya`) on any PC on the same network and run `python -m tinytuya wizard`. It does a one-time cloud login to retrieve the key, then you can keep the key without any ongoing cloud access.
@@ -97,10 +96,12 @@ Enter your lock's LAN IP when setting up cloud mode to enable hybrid polling: lo
 
 | Field | Description |
 |---|---|
-| Device ID | Your lock's device ID |
-| Local Key | The device's encryption key |
-| Lock LAN IP address | Local IP address of the lock |
-| Protocol version | Usually `3.4` |
+| Device ID | Auto-filled if you use the network scan, otherwise from the Tuya app |
+| Local Key | The device's encryption key (see above) |
+| Lock LAN IP address | Auto-filled if you use the network scan, otherwise from the router DHCP table |
+| Protocol version | Auto-detected if scanned, usually `3.4` |
+
+> During local setup you'll be offered a **Scan network** option that broadcasts a UDP discovery packet and lists all Tuya devices found, with their IP and Device ID pre-filled.
 
 **Cloud:**
 

@@ -176,8 +176,103 @@ class TuyaLockMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_local(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Step 2b: local-only — device ID, local key, IP, protocol version."""
+        """Step 2b: offer network scan or manual entry."""
+        if user_input is not None:
+            if user_input.get("method") == "scan":
+                return await self.async_step_local_scan()
+            return await self.async_step_local_manual()
+
+        schema = vol.Schema(
+            {
+                vol.Required("method", default="scan"): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[
+                            {
+                                "value": "scan",
+                                "label": "Scan network — auto-discover IP and Device ID",
+                            },
+                            {
+                                "value": "manual",
+                                "label": "Enter all details manually",
+                            },
+                        ],
+                        mode=SelectSelectorMode.LIST,
+                    )
+                ),
+            }
+        )
+        return self.async_show_form(step_id="local", data_schema=schema)
+
+    async def async_step_local_scan(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Scan the LAN for Tuya devices and let the user pick one."""
+        if user_input is not None:
+            selected = user_input.get("selected_device", "_manual")
+            if selected and selected != "_manual":
+                info = getattr(self, "_discovered", {}).get(selected, {})
+                self._prefill: dict[str, str] = {
+                    CONF_DEVICE_ID: selected,
+                    CONF_LOCAL_IP: info.get("ip", ""),
+                    CONF_LOCAL_VERSION: str(
+                        info.get("version", DEFAULT_LOCAL_VERSION)
+                    ),
+                }
+            return await self.async_step_local_manual()
+
+        # First call — run the UDP broadcast scan in a thread (blocks ~3-5 s)
+        import tinytuya  # noqa: PLC0415
+
+        def _scan() -> dict:
+            try:
+                return (
+                    tinytuya.deviceScan(verbose=False, maxretry=6, color=False)
+                    or {}
+                )
+            except Exception:  # noqa: BLE001
+                return {}
+
+        self._discovered: dict = await self.hass.async_add_executor_job(_scan)
+
+        if not self._discovered:
+            # Nothing found — show an empty confirmation form; submit goes to manual
+            return self.async_show_form(
+                step_id="local_scan",
+                data_schema=vol.Schema({}),
+                errors={"base": "no_devices_found"},
+            )
+
+        options = [
+            {
+                "value": dev_id,
+                "label": (
+                    f"{info.get('ip', 'Unknown IP')} — {dev_id}"
+                    f" (protocol v{info.get('version', '?')})"
+                ),
+            }
+            for dev_id, info in self._discovered.items()
+        ]
+        options.append(
+            {"value": "_manual", "label": "Device not listed — enter manually"}
+        )
+
+        schema = vol.Schema(
+            {
+                vol.Required("selected_device"): SelectSelector(
+                    SelectSelectorConfig(
+                        options=options, mode=SelectSelectorMode.LIST
+                    )
+                ),
+            }
+        )
+        return self.async_show_form(step_id="local_scan", data_schema=schema)
+
+    async def async_step_local_manual(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Local-only details form — pre-filled from scan when available."""
         errors: dict[str, str] = {}
+        prefill: dict[str, str] = getattr(self, "_prefill", {})
 
         if user_input is not None:
             user_input[CONF_LOCAL_IP] = user_input[CONF_LOCAL_IP].strip()
@@ -194,23 +289,30 @@ class TuyaLockMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         schema = vol.Schema(
             {
-                vol.Required(CONF_DEVICE_ID): str,
+                vol.Required(
+                    CONF_DEVICE_ID, default=prefill.get(CONF_DEVICE_ID, "")
+                ): str,
                 vol.Required(CONF_LOCAL_KEY): str,
-                vol.Required(CONF_LOCAL_IP): str,
+                vol.Required(
+                    CONF_LOCAL_IP, default=prefill.get(CONF_LOCAL_IP, "")
+                ): str,
                 vol.Optional(
-                    CONF_LOCAL_VERSION, default=DEFAULT_LOCAL_VERSION
+                    CONF_LOCAL_VERSION,
+                    default=prefill.get(CONF_LOCAL_VERSION, DEFAULT_LOCAL_VERSION),
                 ): SelectSelector(
                     SelectSelectorConfig(
                         options=[
-                            {"value": v, "label": f"Protocol {v}"} for v in LOCAL_VERSIONS
+                            {"value": v, "label": f"Protocol {v}"}
+                            for v in LOCAL_VERSIONS
                         ],
                         mode=SelectSelectorMode.LIST,
                     )
                 ),
             }
         )
-
-        return self.async_show_form(step_id="local", data_schema=schema, errors=errors)
+        return self.async_show_form(
+            step_id="local_manual", data_schema=schema, errors=errors
+        )
 
 
 class TuyaLockMonitorOptionsFlow(config_entries.OptionsFlow):

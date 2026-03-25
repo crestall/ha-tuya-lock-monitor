@@ -22,10 +22,24 @@
       },
       "local": {
         "title": "Tuya Lock Monitor — Local Only Setup",
-        "description": "Enter your lock's details to connect directly over your local network.\n\n**How to find your local key:**\n- Run `python -m tinytuya wizard` on a PC on the same network (requires a one-time Tuya IoT Platform login)\n- Or check your HA logs from a previous cloud-mode setup\n\n**Device ID:** Found in the Tuya/Smart Life app under device details, or via tinytuya wizard.\n\n**Device IP:** Find it in your router's DHCP client table.",
+        "description": "Choose how to find your lock on the network.\n\n**Scan** broadcasts a discovery packet on your LAN and finds Tuya devices automatically — it will pre-fill the IP address and Device ID for you.\n\n**Manual** lets you enter all details yourself if the scan doesn't find your device.",
+        "data": {
+          "method": "Discovery method"
+        }
+      },
+      "local_scan": {
+        "title": "Tuya Lock Monitor — Discovered Devices",
+        "description": "Select your lock from the list below. The IP address and Device ID will be pre-filled on the next screen — you only need to enter your **local key**.\n\nIf your lock is not listed, select **Enter manually** at the bottom.",
+        "data": {
+          "selected_device": "Select your device"
+        }
+      },
+      "local_manual": {
+        "title": "Tuya Lock Monitor — Local Connection Details",
+        "description": "Enter your lock's local connection details.\n\n**How to find the local key:**\n- Run `python -m tinytuya wizard` on any PC on the same network (requires a one-time Tuya IoT Platform login to retrieve the key)\n- Or check your HA debug logs from a previous cloud-mode setup — search for `local_key`\n\n**Device ID:** Shown in the Tuya/Smart Life app under device details, or found by the tinytuya wizard.\n\n**Device IP:** Find it in your router's DHCP client table, or use the Scan option.",
         "data": {
           "device_id": "Device ID",
-          "local_key": "Local key (encryption key for the device)",
+          "local_key": "Local key (device encryption key)",
           "local_ip": "Lock LAN IP address",
           "local_version": "Protocol version"
         }
@@ -35,6 +49,7 @@
       "cannot_connect": "Cannot connect to the device. Check the IP address and that the device is on the same network.",
       "invalid_auth": "Invalid Access ID or Secret. Check your Tuya IoT Platform credentials.",
       "local_failed": "Could not communicate with the device. Check the local key and protocol version.",
+      "no_devices_found": "No Tuya devices were found on your network. Make sure the lock is powered on and connected to Wi-Fi. Click Submit to enter details manually instead.",
       "unknown": "An unexpected error occurred. Check the HA logs for details."
     },
     "abort": {
