@@ -39,6 +39,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await coordinator.async_config_entry_first_refresh()
 
+    # Start the 1-second ping loop if a local IP is configured.
+    # The loop runs for the lifetime of the entry and is cancelled on unload.
+    if local_ip:
+        await coordinator.async_start_ping_loop()
+        entry.async_on_unload(coordinator.async_stop_ping_loop)
+
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

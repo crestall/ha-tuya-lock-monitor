@@ -22,10 +22,10 @@ ENDPOINTS = {
 }
 
 DEFAULT_ENDPOINT = "https://openapi.tuyaeu.com"
-UPDATE_INTERVAL = 60           # seconds — cloud-only mode
-LOCAL_UPDATE_INTERVAL = 15     # seconds — local mode
-CLOUD_META_REFRESH = 300       # seconds — how often to refresh metadata from cloud in local mode
-LOCAL_FAIL_THRESHOLD = 3       # consecutive local failures before switching to cloud fallback
+UPDATE_INTERVAL = 60        # seconds — cloud-only scheduled refresh
+LOCAL_POLL_INTERVAL = 15    # seconds — minimum gap between local tinytuya polls
+PING_INTERVAL = 1           # seconds — how often to TCP-ping the device
+CLOUD_META_REFRESH = 300    # seconds — how often to refresh cloud metadata / local_key
 
 LOCAL_VERSIONS = ["3.3", "3.4", "3.5"]
 DEFAULT_LOCAL_VERSION = "3.4"

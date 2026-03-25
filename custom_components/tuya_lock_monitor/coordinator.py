@@ -1,4 +1,4 @@
-﻿"""Tuya OpenAPI coordinator — handles authentication, local polling, and cloud fallback."""
+﻿"""Tuya Lock Monitor coordinator — ping-driven local polling with cloud fallback."""
 from __future__ import annotations
 
 import asyncio
@@ -20,16 +20,29 @@ from .const import (
     CODE_TO_DPS,
     DOMAIN,
     DPS_TO_CODE,
-    LOCAL_FAIL_THRESHOLD,
-    LOCAL_UPDATE_INTERVAL,
+    LOCAL_POLL_INTERVAL,
+    PING_INTERVAL,
     UPDATE_INTERVAL,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
+# Tuya local protocol port used for TCP-ping reachability checks
+TUYA_LOCAL_PORT = 6668
+
 
 class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Coordinator — uses local LAN when available, falls back to Tuya cloud API."""
+    """Coordinator with 1-second TCP-ping loop for instant local reachability detection.
+
+    Behaviour:
+    - If local IP is set: pings port 6668 every second.
+      - Ping OK  → polls tinytuya every LOCAL_POLL_INTERVAL seconds (default 15 s).
+      - Ping fail → falls back to cloud (if cloud credentials provided); never gives up
+                    on local — resumes local polling the moment the device responds again.
+    - If no local IP: cloud polls on UPDATE_INTERVAL (default 60 s).
+    - Local-only mode (no cloud creds): keeps trying local forever; returns stale data
+      while unreachable so entities don't go unavailable.
+    """
 
     def __init__(
         self,
@@ -48,22 +61,108 @@ class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._endpoint = endpoint.rstrip("/")
         self._local_ip = local_ip or None
         self._local_version = float(local_version)
-        # local_key_direct: provided manually (local-only mode); no cloud fetch needed
         self._local_key: str | None = local_key_direct or None
         self._cloud_enabled: bool = bool(access_id and access_secret)
-        self._local_fail_count = 0
+
+        # Ping-loop state
+        self._local_reachable: bool = False
+        self._last_local_poll: float = 0.0
+        self._ping_task: asyncio.Task | None = None
+
+        # Cloud state
         self._cached_meta: dict[str, Any] = {}
         self._last_meta_refresh: float = 0.0
         self._token: str | None = None
         self._token_expire: float = 0.0
 
-        interval = LOCAL_UPDATE_INTERVAL if self._local_ip else UPDATE_INTERVAL
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=timedelta(seconds=interval),
+            # The coordinator's scheduled updates handle cloud fallback / meta refresh.
+            # Local updates come from the ping loop via async_set_updated_data().
+            update_interval=timedelta(seconds=UPDATE_INTERVAL),
         )
+
+    # ------------------------------------------------------------------
+    # Ping loop — started by __init__.py after first refresh
+    # ------------------------------------------------------------------
+
+    async def async_start_ping_loop(self) -> None:
+        """Start the background 1-second ping loop."""
+        if self._ping_task and not self._ping_task.done():
+            return
+        self._ping_task = self.hass.async_create_task(
+            self._ping_loop(), name="tuya_lock_ping"
+        )
+        _LOGGER.debug("[TuyaPing] Ping loop started for %s", self._local_ip)
+
+    def async_stop_ping_loop(self) -> None:
+        """Cancel the ping loop (called on unload)."""
+        if self._ping_task and not self._ping_task.done():
+            self._ping_task.cancel()
+            _LOGGER.debug("[TuyaPing] Ping loop stopped")
+
+    async def _ping_loop(self) -> None:
+        """Ping the device every PING_INTERVAL seconds.
+
+        When reachable and LOCAL_POLL_INTERVAL has elapsed, do a full
+        tinytuya status poll and push the result to listeners immediately via
+        async_set_updated_data(). When unreachable, the next scheduled
+        _async_update_data() call will use cloud fallback.
+        """
+        while True:
+            await asyncio.sleep(PING_INTERVAL)
+            try:
+                reachable = await self._ping_local()
+            except asyncio.CancelledError:
+                return
+
+            if reachable and not self._local_reachable:
+                _LOGGER.info("[TuyaPing] Device back online at %s", self._local_ip)
+            elif not reachable and self._local_reachable:
+                _LOGGER.warning("[TuyaPing] Device went offline at %s", self._local_ip)
+
+            self._local_reachable = reachable
+
+            if not reachable:
+                continue
+
+            # Reachable — poll if enough time has elapsed since last poll
+            if (time.time() - self._last_local_poll) < LOCAL_POLL_INTERVAL:
+                continue
+
+            try:
+                status = await self._local_get_status()
+                self._last_local_poll = time.time()
+                result = self._build_result(
+                    status,
+                    "local" if self._cloud_enabled else "local_only",
+                )
+                self.async_set_updated_data(result)
+                _LOGGER.debug("[TuyaPing] Local poll OK — pushed to listeners")
+            except asyncio.CancelledError:
+                return
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("[TuyaPing] Reachable but poll failed: %s", err)
+                # Don't clear _local_reachable — ping still works; poll might
+                # succeed next cycle (e.g. a transient DPS read error)
+
+    async def _ping_local(self) -> bool:
+        """Return True if the device responds on port 6668 within 0.5 s."""
+        try:
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection(self._local_ip, TUYA_LOCAL_PORT),
+                timeout=0.5,
+            )
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:  # noqa: BLE001
+                pass
+            return True
+        except Exception:  # noqa: BLE001
+            return False
 
     # ------------------------------------------------------------------
     # Signing helpers
@@ -85,14 +184,11 @@ class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "[TuyaSign] method=%s path=%s ts=%s nonce=%s token_present=%s",
             method, path, ts, nonce, bool(token),
         )
-        _LOGGER.debug("[TuyaSign] str_to_sign=%r", str_to_sign)
-        _LOGGER.debug("[TuyaSign] full message (no secret shown) length=%d", len(message))
         signature = hmac.new(
             self._access_secret.encode(),
             message.encode(),
             digestmod=hashlib.sha256,
         ).hexdigest().upper()
-        _LOGGER.debug("[TuyaSign] signature=%s", signature)
         return signature
 
     def _base_headers(self, ts: str, nonce: str, sign: str, token: str = "") -> dict:
@@ -121,10 +217,6 @@ class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         url = f"{self._endpoint}{sign_path}?{query}"
         _LOGGER.debug("[TuyaToken] Requesting token from %s", url)
-        _LOGGER.debug(
-            "[TuyaToken] Headers (no secret): client_id=%s t=%s nonce=%s",
-            self._access_id, ts, nonce,
-        )
 
         async with session.get(url, headers=headers) as resp:
             status = resp.status
@@ -216,7 +308,7 @@ class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _local_get_status(self) -> dict[str, Any]:
         """Fetch device status directly over LAN using tinytuya."""
-        import tinytuya  # noqa: PLC0415 — deferred to avoid import cost when not needed
+        import tinytuya  # noqa: PLC0415
 
         device_id = self._device_id
         local_ip = self._local_ip
@@ -231,8 +323,7 @@ class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 version=version,
             )
             d.set_socketTimeout(5)
-            result = d.status()
-            return result
+            return d.status()
 
         result: dict = await self.hass.async_add_executor_job(_sync_fetch)
 
@@ -275,7 +366,7 @@ class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self.hass.async_add_executor_job(_sync_send)
 
     # ------------------------------------------------------------------
-    # DataUpdateCoordinator
+    # Helpers
     # ------------------------------------------------------------------
 
     def _build_result(self, status: dict[str, Any], mode: str) -> dict[str, Any]:
@@ -298,77 +389,84 @@ class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._local_key = info["local_key"]
             _LOGGER.debug("[TuyaLocal] local_key refreshed from cloud")
 
-    async def _async_update_data(self) -> dict[str, Any]:
-        now = time.time()
-        need_meta = not self._cached_meta or (now - self._last_meta_refresh) > CLOUD_META_REFRESH
+    # ------------------------------------------------------------------
+    # DataUpdateCoordinator — scheduled cloud fallback / meta refresh
+    # ------------------------------------------------------------------
 
-        # --- Local-only mode (no cloud credentials) ---
+    async def _async_update_data(self) -> dict[str, Any]:
+        """Called on the 60-second schedule.
+
+        The ping loop handles all local updates via async_set_updated_data().
+        This method handles:
+        - Cloud-only mode (no local IP)
+        - Cloud fallback when local is unreachable
+        - Periodic cloud metadata refresh (renews local_key from cloud)
+        - Local-only mode when device is unreachable (returns stale data)
+        """
+        now = time.time()
+
+        # ── Local-only mode (no cloud credentials) ──────────────────────
         if not self._cloud_enabled:
             if not self._local_ip or not self._local_key:
                 raise UpdateFailed(
                     "Local-only mode requires a device IP and local key. "
                     "Use Configure to update them."
                 )
-            try:
+            if self._local_reachable:
+                # Ping loop is actively polling; return current data if we have it,
+                # otherwise do a one-off poll to satisfy the first-refresh requirement.
+                if self.data:
+                    return self.data
                 status = await self._local_get_status()
-                return {
-                    "device_id": self._device_id,
-                    "name": "Tuya Lock",
-                    "online": True,
-                    "product_name": "",
-                    "status": status,
-                    "mode": "local_only",
-                }
-            except Exception as err:  # noqa: BLE001
-                raise UpdateFailed(f"Local connection failed: {err}") from err
+                self._last_local_poll = now
+                return self._build_result(status, "local_only")
 
-        # --- Cloud-assisted local mode ---
-        if self._local_ip:
-            # Refresh cloud metadata (and local_key) periodically
-            if need_meta:
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        await self._refresh_cloud_meta(session)
-                except Exception as err:  # noqa: BLE001
-                    if not self._cached_meta:
-                        raise UpdateFailed(
-                            f"Cannot reach cloud for initial setup: {err}"
-                        ) from err
-                    _LOGGER.warning(
-                        "[TuyaLocal] Cloud metadata refresh failed (using cache): %s", err
-                    )
-
-            if not self._local_key:
-                raise UpdateFailed("No local_key available — cloud metadata fetch required")
-
-            # Try local
-            if self._local_fail_count < LOCAL_FAIL_THRESHOLD:
-                try:
-                    status = await self._local_get_status()
-                    self._local_fail_count = 0
-                    return self._build_result(status, "local")
-                except Exception as err:  # noqa: BLE001
-                    self._local_fail_count += 1
-                    _LOGGER.warning(
-                        "[TuyaLocal] Local fetch failed (%d/%d): %s",
-                        self._local_fail_count, LOCAL_FAIL_THRESHOLD, err,
-                    )
-            else:
-                _LOGGER.warning(
-                    "[TuyaLocal] %d consecutive local failures — falling back to cloud",
-                    self._local_fail_count,
+            # Device unreachable — return stale data so entities stay available,
+            # or raise on first call (no data yet).
+            if self.data:
+                _LOGGER.debug(
+                    "[TuyaLocal] Device unreachable — returning stale data while retrying"
                 )
+                return self.data
+            raise UpdateFailed(
+                "Cannot reach the lock at %s — check the IP and that the device is on." %
+                self._local_ip
+            )
 
-            # Cloud fallback
+        # ── Cloud credentials available ──────────────────────────────────
+        need_meta = not self._cached_meta or (now - self._last_meta_refresh) > CLOUD_META_REFRESH
+
+        if self._local_ip:
+            # Hybrid mode — ping loop drives local updates.
+            if self._local_reachable and self.data:
+                # Refresh cloud meta periodically (renews local_key).
+                if need_meta:
+                    try:
+                        async with aiohttp.ClientSession() as session:
+                            await self._refresh_cloud_meta(session)
+                    except Exception as err:  # noqa: BLE001
+                        _LOGGER.warning(
+                            "[TuyaLocal] Cloud meta refresh failed (using cache): %s", err
+                        )
+                return self.data
+
+            # Local unreachable — cloud fallback; never give up on local.
+            _LOGGER.info("[TuyaCloud] Local unreachable — polling cloud as fallback")
             try:
                 async with aiohttp.ClientSession() as session:
+                    await self._refresh_cloud_meta(session)
                     token = await self._get_token(session)
                     status = await self._cloud_device_status(session, token)
                 return self._build_result(status, "cloud_fallback")
             except aiohttp.ClientError as err:
-                raise UpdateFailed(f"Both local and cloud failed: {err}") from err
+                if self.data:
+                    _LOGGER.warning(
+                        "[TuyaCloud] Cloud fallback also failed — returning stale data: %s", err
+                    )
+                    return self.data
+                raise UpdateFailed(f"Both local and cloud unavailable: {err}") from err
 
-        # --- Cloud-only mode ---
+        # ── Cloud-only mode (no local IP) ────────────────────────────────
         try:
             async with aiohttp.ClientSession() as session:
                 await self._refresh_cloud_meta(session)
@@ -380,31 +478,29 @@ class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return self._build_result(status, "cloud")
 
     # ------------------------------------------------------------------
-    # Command helper (local first, cloud fallback)
+    # Command helper — local first (if reachable), cloud fallback
     # ------------------------------------------------------------------
 
     async def async_send_command(self, commands: list[dict]) -> bool:
-        """Send commands — local-only if no cloud creds, otherwise local-first with cloud fallback."""
-        if not self._cloud_enabled:
-            # Local-only mode — must use local, no fallback available
-            if self._local_ip and self._local_key:
-                try:
-                    await self._local_send_command(commands)
-                    await asyncio.sleep(0.3)
-                    await self.async_request_refresh()
-                    return True
-                except Exception as err:  # noqa: BLE001
-                    _LOGGER.error("[TuyaLocal] Command failed in local-only mode: %s", err)
-            return False
-
-        if self._local_ip and self._local_key and self._local_fail_count < LOCAL_FAIL_THRESHOLD:
+        """Send commands — local if reachable, cloud otherwise."""
+        if self._local_ip and self._local_key and self._local_reachable:
             try:
                 await self._local_send_command(commands)
                 await asyncio.sleep(0.3)
                 await self.async_request_refresh()
                 return True
             except Exception as err:  # noqa: BLE001
-                _LOGGER.warning("[TuyaLocal] Command failed, trying cloud: %s", err)
+                _LOGGER.warning(
+                    "[TuyaLocal] Command failed%s: %s",
+                    " — trying cloud" if self._cloud_enabled else "",
+                    err,
+                )
+                if not self._cloud_enabled:
+                    return False
+
+        if not self._cloud_enabled:
+            _LOGGER.error("[TuyaLocal] Cannot send command — device unreachable and no cloud configured")
+            return False
 
         return await self._cloud_send_command(commands)
 
