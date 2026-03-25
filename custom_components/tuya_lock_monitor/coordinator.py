@@ -142,8 +142,9 @@ class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             try:
                 status = await self._local_get_status()
                 self._last_local_poll = time.time()
+                merged = self._merge_local_status(status)
                 result = self._build_result(
-                    status,
+                    merged,
                     "local" if self._cloud_enabled else "local_only",
                 )
                 self._last_contact = dt_util.utcnow()
@@ -387,6 +388,19 @@ class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "mode": mode,
         }
 
+    def _merge_local_status(self, new_status: dict[str, Any]) -> dict[str, Any]:
+        """Merge tinytuya DPS values onto the previous status dict.
+
+        tinytuya doesn't always return every DPS on every poll (e.g. unlock
+        counters may be absent). Merging preserves existing values for any key
+        not included in the new response so entity states don't flip to None.
+        """
+        if self.data and "status" in self.data:
+            merged = dict(self.data["status"])
+            merged.update(new_status)
+            return merged
+        return new_status
+
     async def _refresh_cloud_meta(self, session: aiohttp.ClientSession) -> None:
         """Fetch device info from cloud and cache metadata + local_key."""
         token = await self._get_token(session)
@@ -466,7 +480,6 @@ class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     await self._refresh_cloud_meta(session)
                     token = await self._get_token(session)
                     status = await self._cloud_device_status(session, token)
-                self._last_contact = dt_util.utcnow()
                 return self._build_result(status, "cloud_fallback")
             except Exception as err:  # noqa: BLE001
                 if self.data:
@@ -490,7 +503,6 @@ class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 return self.data
             raise UpdateFailed(f"Network error: {err}") from err
 
-        self._last_contact = dt_util.utcnow()
         return self._build_result(status, "cloud")
 
     # ------------------------------------------------------------------
