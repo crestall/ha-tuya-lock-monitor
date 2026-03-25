@@ -38,7 +38,7 @@ BINARY_SENSORS: tuple[TuyaLockBinarySensorDescription, ...] = (
         status_key="reverse_lock",
         device_class=BinarySensorDeviceClass.LOCK,
         icon="mdi:lock-plus",
-        # True = deadbolt engaged, which means the lock is secure
+        invert=True,
     ),
     TuyaLockBinarySensorDescription(
         key="hijack",
