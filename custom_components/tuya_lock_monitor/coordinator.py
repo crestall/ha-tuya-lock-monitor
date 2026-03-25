@@ -40,6 +40,7 @@ class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         endpoint: str,
         local_ip: str | None = None,
         local_version: str = "3.4",
+        local_key_direct: str | None = None,
     ) -> None:
         self._access_id = access_id
         self._access_secret = access_secret
@@ -47,7 +48,9 @@ class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._endpoint = endpoint.rstrip("/")
         self._local_ip = local_ip or None
         self._local_version = float(local_version)
-        self._local_key: str | None = None
+        # local_key_direct: provided manually (local-only mode); no cloud fetch needed
+        self._local_key: str | None = local_key_direct or None
+        self._cloud_enabled: bool = bool(access_id and access_secret)
         self._local_fail_count = 0
         self._cached_meta: dict[str, Any] = {}
         self._last_meta_refresh: float = 0.0
@@ -299,7 +302,27 @@ class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         now = time.time()
         need_meta = not self._cached_meta or (now - self._last_meta_refresh) > CLOUD_META_REFRESH
 
-        # --- Local mode ---
+        # --- Local-only mode (no cloud credentials) ---
+        if not self._cloud_enabled:
+            if not self._local_ip or not self._local_key:
+                raise UpdateFailed(
+                    "Local-only mode requires a device IP and local key. "
+                    "Use Configure to update them."
+                )
+            try:
+                status = await self._local_get_status()
+                return {
+                    "device_id": self._device_id,
+                    "name": "Tuya Lock",
+                    "online": True,
+                    "product_name": "",
+                    "status": status,
+                    "mode": "local_only",
+                }
+            except Exception as err:  # noqa: BLE001
+                raise UpdateFailed(f"Local connection failed: {err}") from err
+
+        # --- Cloud-assisted local mode ---
         if self._local_ip:
             # Refresh cloud metadata (and local_key) periodically
             if need_meta:
@@ -361,7 +384,19 @@ class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # ------------------------------------------------------------------
 
     async def async_send_command(self, commands: list[dict]) -> bool:
-        """Send commands — tries local first if configured, falls back to cloud."""
+        """Send commands — local-only if no cloud creds, otherwise local-first with cloud fallback."""
+        if not self._cloud_enabled:
+            # Local-only mode — must use local, no fallback available
+            if self._local_ip and self._local_key:
+                try:
+                    await self._local_send_command(commands)
+                    await asyncio.sleep(0.3)
+                    await self.async_request_refresh()
+                    return True
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.error("[TuyaLocal] Command failed in local-only mode: %s", err)
+            return False
+
         if self._local_ip and self._local_key and self._local_fail_count < LOCAL_FAIL_THRESHOLD:
             try:
                 await self._local_send_command(commands)

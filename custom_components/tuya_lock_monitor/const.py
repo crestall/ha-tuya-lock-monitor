@@ -7,7 +7,12 @@ CONF_ACCESS_SECRET = "access_secret"
 CONF_DEVICE_ID = "device_id"
 CONF_ENDPOINT = "endpoint"
 CONF_LOCAL_IP = "local_ip"
+CONF_LOCAL_KEY = "local_key"
 CONF_LOCAL_VERSION = "local_version"
+CONF_MODE = "mode"
+
+MODE_CLOUD = "cloud"
+MODE_LOCAL = "local"
 
 ENDPOINTS = {
     "EU": "https://openapi.tuyaeu.com",

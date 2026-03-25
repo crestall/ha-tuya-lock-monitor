@@ -2,8 +2,15 @@
   "config": {
     "step": {
       "user": {
-        "title": "Tuya Lock Monitor",
-        "description": "Connect to the Tuya OpenAPI to monitor your smart lock.\n\n**Where to find credentials:**\n1. Log in to the Tuya IoT Platform (iot.tuya.com)\n2. Go to **Cloud → Development → My Cloud Projects**\n3. Open your project → **Overview** tab\n4. Copy **Access ID** and **Access Secret**\n5. Find your **Device ID** in **Cloud → Development → Devices**\n\n**Local IP** (optional): Enter the LAN IP of your lock for faster local polling (15s) instead of cloud polling (60s). Find it in your router's DHCP table.",
+        "title": "Tuya Lock Monitor — Connection Mode",
+        "description": "Choose how to connect to your smart lock.\n\n**Cloud (recommended):** Uses the Tuya IoT Platform. Requires a free account and a project at iot.tuya.com. Can optionally add a local IP for faster local polling.\n\n**Local only:** No cloud account needed. Enter your device's local key directly. The local key can be found in your router's logs or retrieved once via tinytuya's setup wizard.",
+        "data": {
+          "mode": "Connection mode"
+        }
+      },
+      "cloud": {
+        "title": "Tuya Lock Monitor — Cloud Setup",
+        "description": "Enter your Tuya IoT Platform credentials.\n\n1. Log in at **iot.tuya.com**\n2. Go to **Cloud → Development → My Cloud Projects**\n3. Open your project → **Overview** tab\n4. Copy **Access ID** and **Access Secret**\n5. Find your **Device ID** in **Cloud → Development → Devices**\n\n**Local IP** (optional): Add your lock's LAN IP for fast local polling (15s) instead of cloud-only polling (60s). Find it in your router's DHCP table.",
         "data": {
           "access_id": "Access ID (Client ID)",
           "access_secret": "Access Secret (Client Secret)",
@@ -12,12 +19,23 @@
           "local_ip": "Lock LAN IP address (optional — enables local mode)",
           "local_version": "Local protocol version (optional)"
         }
+      },
+      "local": {
+        "title": "Tuya Lock Monitor — Local Only Setup",
+        "description": "Enter your lock's details to connect directly over your local network.\n\n**How to find your local key:**\n- Run `python -m tinytuya wizard` on a PC on the same network (requires a one-time Tuya IoT Platform login)\n- Or check your HA logs from a previous cloud-mode setup\n\n**Device ID:** Found in the Tuya/Smart Life app under device details, or via tinytuya wizard.\n\n**Device IP:** Find it in your router's DHCP client table.",
+        "data": {
+          "device_id": "Device ID",
+          "local_key": "Local key (encryption key for the device)",
+          "local_ip": "Lock LAN IP address",
+          "local_version": "Protocol version"
+        }
       }
     },
     "error": {
-      "cannot_connect": "Cannot connect to the Tuya API. Check your endpoint and network.",
+      "cannot_connect": "Cannot connect to the device. Check the IP address and that the device is on the same network.",
       "invalid_auth": "Invalid Access ID or Secret. Check your Tuya IoT Platform credentials.",
-      "unknown": "An unexpected error occurred."
+      "local_failed": "Could not communicate with the device. Check the local key and protocol version.",
+      "unknown": "An unexpected error occurred. Check the HA logs for details."
     },
     "abort": {
       "already_configured": "This device is already configured."
@@ -26,11 +44,12 @@
   "options": {
     "step": {
       "init": {
-        "title": "Tuya Lock Monitor — Local Settings",
-        "description": "Enter the LAN IP of your lock to enable fast local polling (15s). Leave blank to use cloud-only mode (60s).\n\nFind the IP in your router's DHCP client table.",
+        "title": "Tuya Lock Monitor — Settings",
+        "description": "Update local connection settings. For cloud mode, enter the lock's LAN IP to enable fast local polling (15s). Leave blank for cloud-only (60s).",
         "data": {
-          "local_ip": "Lock LAN IP address (leave blank for cloud-only)",
-          "local_version": "Local protocol version"
+          "local_key": "Local key (update if device was reset and re-paired)",
+          "local_ip": "Lock LAN IP address",
+          "local_version": "Protocol version"
         }
       }
     }
