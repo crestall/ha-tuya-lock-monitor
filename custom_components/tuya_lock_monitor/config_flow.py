@@ -114,6 +114,42 @@ class TuyaLockMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
 
+class TuyaLockMonitorOptionsFlow(config_entries.OptionsFlow):
+    """Allow the local IP and protocol version to be changed after setup."""
+
+    def __init__(self, entry: config_entries.ConfigEntry) -> None:
+        self._entry = entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        if user_input is not None:
+            if user_input.get(CONF_LOCAL_IP):
+                user_input[CONF_LOCAL_IP] = user_input[CONF_LOCAL_IP].strip()
+            return self.async_create_entry(title="", data=user_input)
+
+        current_ip = self._entry.options.get(
+            CONF_LOCAL_IP, self._entry.data.get(CONF_LOCAL_IP, "")
+        )
+        current_version = self._entry.options.get(
+            CONF_LOCAL_VERSION,
+            self._entry.data.get(CONF_LOCAL_VERSION, DEFAULT_LOCAL_VERSION),
+        )
+
+        schema = vol.Schema(
+            {
+                vol.Optional(CONF_LOCAL_IP, default=current_ip): str,
+                vol.Optional(CONF_LOCAL_VERSION, default=current_version): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[{"value": v, "label": f"Protocol {v}"} for v in LOCAL_VERSIONS],
+                        mode=SelectSelectorMode.LIST,
+                    )
+                ),
+            }
+        )
+
+        return self.async_show_form(step_id="init", data_schema=schema)
+
 
 async def _validate_credentials(
     hass: HomeAssistant, data: dict[str, Any]

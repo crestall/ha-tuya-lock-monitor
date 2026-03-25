@@ -22,5 +22,17 @@
     "abort": {
       "already_configured": "This device is already configured."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Tuya Lock Monitor — Local Settings",
+        "description": "Enter the LAN IP of your lock to enable fast local polling (15s). Leave blank to use cloud-only mode (60s).\n\nFind the IP in your router's DHCP client table.",
+        "data": {
+          "local_ip": "Lock LAN IP address (leave blank for cloud-only)",
+          "local_version": "Local protocol version"
+        }
+      }
+    }
   }
 }

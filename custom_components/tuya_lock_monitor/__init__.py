@@ -22,14 +22,16 @@ PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.LOCK]
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Tuya Lock Monitor from a config entry."""
+    local_ip = entry.options.get(CONF_LOCAL_IP) or entry.data.get(CONF_LOCAL_IP) or None
+    local_version = entry.options.get(CONF_LOCAL_VERSION) or entry.data.get(CONF_LOCAL_VERSION, DEFAULT_LOCAL_VERSION)
     coordinator = TuyaLockCoordinator(
         hass,
         entry.data[CONF_ACCESS_ID],
         entry.data[CONF_ACCESS_SECRET],
         entry.data[CONF_DEVICE_ID],
         entry.data[CONF_ENDPOINT],
-        local_ip=entry.data.get(CONF_LOCAL_IP) or None,
-        local_version=entry.data.get(CONF_LOCAL_VERSION, DEFAULT_LOCAL_VERSION),
+        local_ip=local_ip,
+        local_version=local_version,
     )
 
     await coordinator.async_config_entry_first_refresh()
@@ -37,7 +39,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
+
+
+async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload the entry when options change."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
