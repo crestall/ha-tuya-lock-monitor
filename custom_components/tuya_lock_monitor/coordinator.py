@@ -71,6 +71,9 @@ class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Doorbell auto-reset handle (set doorbell back to False after 1 s)
         self._doorbell_reset_unsub: object | None = None
 
+        # Unlock-event auto-reset handles (reset code back to 0 after 1 s)
+        self._unlock_reset_unsubs: dict[str, object] = {}  # key → unsub callable
+
         # Cloud state
         self._cached_meta: dict[str, Any] = {}
         self._last_meta_refresh: float = 0.0
@@ -364,6 +367,16 @@ class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # Doorbell auto-reset
     # ------------------------------------------------------------------
 
+    # Status keys that must ONLY be set from local data when a local IP is
+    # configured.  Cloud status is never allowed to overwrite these so that
+    # a cloud poll between two local wakes doesn't erase the last-seen value.
+    _LOCAL_ONLY_KEYS: frozenset[str] = frozenset({
+        "doorbell",
+        "unlock_fingerprint",
+        "unlock_password",
+        "unlock_card",
+    })
+
     def _schedule_doorbell_reset(self) -> None:
         """Cancel any pending doorbell reset and schedule a new one 1 s from now."""
         if self._doorbell_reset_unsub is not None:
@@ -383,11 +396,32 @@ class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.async_set_updated_data(new_data)
             _LOGGER.debug("[TuyaDoorbell] Doorbell reset to False")
 
+    def _schedule_unlock_reset(self, key: str) -> None:
+        """Schedule a reset of an unlock-event key back to 0 after 1 s."""
+        old = self._unlock_reset_unsubs.pop(key, None)
+        if old is not None:
+            old()  # type: ignore[operator]
+        self._unlock_reset_unsubs[key] = async_call_later(
+            self.hass, 1, lambda _now, k=key: self._async_clear_unlock(k)
+        )
+
+    @callback
+    def _async_clear_unlock(self, key: str) -> None:
+        """Reset an unlock-event key to 0 in coordinator data after 1 second."""
+        self._unlock_reset_unsubs.pop(key, None)
+        if self.data and self.data.get("status", {}).get(key):
+            new_status = {**self.data["status"], key: 0}
+            self.async_set_updated_data({**self.data, "status": new_status})
+            _LOGGER.debug("[TuyaUnlock] %s reset to 0", key)
+
     # ------------------------------------------------------------------
 
     def _build_result(self, status: dict[str, Any], mode: str) -> dict[str, Any]:
         if status.get("doorbell"):
             self._schedule_doorbell_reset()
+        for key in ("unlock_fingerprint", "unlock_password", "unlock_card"):
+            if status.get(key):  # non-zero / truthy means a fresh event arrived
+                self._schedule_unlock_reset(key)
         return {
             "device_id": self._device_id,
             "name": self._cached_meta.get("name", "Tuya Lock"),
@@ -488,8 +522,17 @@ class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 async with aiohttp.ClientSession() as session:
                     await self._refresh_cloud_meta(session)
                     token = await self._get_token(session)
-                    status = await self._cloud_device_status(session, token)
-                return self._build_result(status, "cloud_fallback")
+                    cloud_status = await self._cloud_device_status(session, token)
+                # Don't let cloud overwrite locally-observed events (doorbell,
+                # unlock codes) — preserve whatever the local loop last set.
+                if self.data:
+                    local_status = self.data.get("status", {})
+                    for k in self._LOCAL_ONLY_KEYS:
+                        if k in local_status:
+                            cloud_status[k] = local_status[k]
+                        else:
+                            cloud_status.pop(k, None)
+                return self._build_result(cloud_status, "cloud_fallback")
             except Exception as err:  # noqa: BLE001
                 if self.data:
                     _LOGGER.warning(
