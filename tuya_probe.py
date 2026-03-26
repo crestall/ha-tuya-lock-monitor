@@ -104,33 +104,34 @@ class TuyaWorker:
 
     def get_status(self, ip: str, device_id: str, local_key: str, version: float) -> dict:
         import tinytuya
-        d = tinytuya.Device(dev_id=device_id, address=ip,
-                            local_key=local_key, version=version)
+        # connection_retry_limit=1 + connection_retry_delay=0 caps total wait to ~4 s max
+        # instead of the default 5 retries × 5 s delay = 30+ s hang
+        d = tinytuya.Device(
+            dev_id=device_id, address=ip, local_key=local_key, version=version,
+            connection_timeout=2, connection_retry_limit=1, connection_retry_delay=0,
+        )
         combined: dict = {}
         err = ""
         try:
-            d.set_socketTimeout(3)
             r = d.status()
             if r and "dps" in r:
                 combined.update({str(k): v for k, v in r["dps"].items()})
-            elif r and "Error" in r:
-                err = r.get("Error", "unknown")
+            elif r:
+                err = r.get("Error", "unknown error")
 
             if combined:
-                # Ask device to push all DPS values; no socketPersistent so a
-                # disconnect raises immediately and we exit via except
-                all_dps = [int(k) for k in DEVICE_MAPPING.keys()]
-                d.updatedps(all_dps)
+                # ask device to push all known DPS values
+                d.updatedps([int(k) for k in DEVICE_MAPPING.keys()])
                 d.set_socketTimeout(1)
-                deadline = time.time() + 2.0
+                deadline = time.time() + 1.5
                 while time.time() < deadline:
                     r = d.receive()
-                    # tinytuya returns error dict on timeout — break on any non-dps response
                     if not r or "Error" in r or "dps" not in r:
                         break
                     combined.update({str(k): v for k, v in r["dps"].items()})
         except Exception as exc:
-            err = str(exc)
+            if not combined:
+                err = str(exc)
         finally:
             try:
                 d.close()
@@ -144,9 +145,10 @@ class TuyaWorker:
     def set_value(self, ip: str, device_id: str, local_key: str,
                   version: float, dp: int, value: Any) -> dict:
         import tinytuya
-        d = tinytuya.Device(dev_id=device_id, address=ip,
-                            local_key=local_key, version=version)
-        d.set_socketTimeout(5)
+        d = tinytuya.Device(
+            dev_id=device_id, address=ip, local_key=local_key, version=version,
+            connection_timeout=2, connection_retry_limit=1, connection_retry_delay=0,
+        )
         return d.set_value(dp, value)
 
     def scan(self, max_retry: int = 6) -> list[dict]:
