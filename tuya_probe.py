@@ -134,6 +134,9 @@ class TuyaWorker:
                 all_dps = [int(k) for k in DEVICE_MAPPING.keys()]
                 _log(f"  [DBG] Sending updatedps({all_dps}) ...")
                 d.updatedps(all_dps)
+                # Set retry limit to 0 AFTER updatedps so receive() fails fast
+                # (no reconnect attempts) when the device drops the connection
+                d.connection_retry_limit = 0
                 d.set_socketTimeout(1)
                 deadline = time.time() + 1.5
                 pkt_count = 0
