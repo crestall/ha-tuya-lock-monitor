@@ -753,28 +753,44 @@ class TuyaProbeApp(tk.Tk):
     def _live_ping_loop(self, ip: str, device_id: str, local_key: str, version: float):
         # Start as False so first successful status() always logs "Device online"
         was_reachable = False
-        while self._ping_running:
-            t0 = time.time()
-            # status() IS the ping — one TCP connection does both jobs, eliminating
-            # the race between a raw ping succeeding and the protocol window closing.
-            result = self._worker.get_status(ip, device_id, local_key, version)
-            ok = "dps" in result
-            self.after(0, self._set_ping_label, ok)
+        stop_reason = "stopped normally"
+        try:
+            while self._ping_running:
+                t0 = time.time()
+                try:
+                    # status() IS the ping — one TCP connection does both jobs, eliminating
+                    # the race between a raw ping succeeding and the protocol window closing.
+                    result = self._worker.get_status(ip, device_id, local_key, version)
+                    ok = "dps" in result
+                    self.after(0, self._set_ping_label, ok)
 
-            # log state transitions
-            if ok and not was_reachable:
-                self.after(0, self._log, f"Device online at {ip}", "OK")
-            elif not ok and was_reachable:
-                self.after(0, self._log, f"Device offline at {ip}", "WARN")
-            was_reachable = ok
-            self._was_reachable = ok
+                    # log state transitions
+                    if ok and not was_reachable:
+                        self.after(0, self._log, f"Device online at {ip}", "OK")
+                    elif not ok and was_reachable:
+                        self.after(0, self._log, f"Device offline at {ip}", "WARN")
+                    was_reachable = ok
+                    self._was_reachable = ok
 
-            if ok:
-                self.after(0, self._handle_status, result)
+                    if ok:
+                        self.after(0, self._handle_status, result)
 
-            elapsed = time.time() - t0
+                except Exception as exc:
+                    stop_reason = f"loop iteration error: {exc}"
+                    self.after(0, self._log, f"Live Monitor error: {exc}", "ERROR")
+
+                elapsed = time.time() - t0
+                if self._ping_running:
+                    time.sleep(max(0.0, 1.0 - elapsed))
+        except Exception as exc:
+            stop_reason = f"fatal thread error: {exc}"
+        finally:
+            # Always clean up and notify, even on unexpected crash
             if self._ping_running:
-                time.sleep(max(0.0, 1.0 - elapsed))
+                self._ping_running = False
+                self.after(0, self._live_var.set, False)
+                self.after(0, self._set_ping_label, None)
+                self.after(0, self._log, f"Live Monitor thread exited: {stop_reason}", "ERROR")
 
     # --------------------------------- status tree double-click
     def _on_status_double_click(self, _event):
