@@ -137,12 +137,14 @@ class TuyaWorker:
                 # Set retry limit to 0 AFTER updatedps so receive() fails fast
                 # (no reconnect attempts) when the device drops the connection
                 d.connection_retry_limit = 0
+                d.retry = False
                 d.set_socketTimeout(1)
                 deadline = time.time() + 1.5
                 pkt_count = 0
                 while time.time() < deadline:
+                    t0 = time.time()
                     r = d.receive()
-                    _log(f"  [DBG] receive() pkt {pkt_count+1}: {r}")
+                    _log(f"  [DBG] receive() pkt {pkt_count+1} in {time.time()-t0:.2f}s: {r}")
                     if not r or "Error" in r or "dps" not in r:
                         _log(f"  [DBG] receive() loop ended (no more dps packets)")
                         break
