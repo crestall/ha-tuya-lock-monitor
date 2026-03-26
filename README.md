@@ -11,16 +11,18 @@ Provides real-time lock status, unlock event counters, battery level, alarm even
 ## Features
 
 - Battery level sensor
-- Unlock counters (fingerprint, password, card, app, temporary code)
+- Last unlock event sensors for fingerprint, password, and card — show the credential code used, with optional user-defined name labels
+- Unlock counters (app, temporary code)
 - Last alarm event (wrong finger, wrong password, pry, low battery, etc.)
-- Doorbell binary sensor
+- Doorbell binary sensor — auto-resets to **Off** after 1 second
 - Deadbolt (reverse lock) state
 - Duress / hijack alert
 - Online / connectivity status
 - Lock entity with passage mode control (lock / unlock)
 - Config flow UI — no YAML required
+- **User-defined credential names** — assign names like "Dad", "Mum", or "Guest" to each stored fingerprint, password, and card code from the integration settings
 - **Built-in LAN scanner** — auto-discovers devices on your network; just enter the local key
-- **Ping-driven local mode** — TCP-pings the lock every second, polls tinytuya every 15 s when reachable
+- **Ping-driven local mode** — status-polls the lock every ~1 s when reachable (status call serves as both ping and data fetch, avoiding the single-session limitation of Tuya devices)
 - **Seamless cloud fallback** — switches to cloud automatically when local is unreachable, resumes local the moment the device comes back
 - **Local-only mode** — no cloud account needed; returns last known state while device is offline so entities never go unavailable
 - **Cloud mode** — polls the Tuya OpenAPI every 60 s when no local IP is set
@@ -67,8 +69,8 @@ Uses the Tuya OpenAPI. Requires a free Tuya IoT Platform account.
 
 **Optional — add local IP in cloud mode (hybrid):**  
 Enter your lock's LAN IP when setting up cloud mode to enable ping-driven hybrid polling:
-- The integration TCP-pings port 6668 every second
-- When reachable → polls tinytuya every 15 s and pushes data immediately to HA
+- The integration polls tinytuya (using `status()` as the ping) approximately every second
+- When reachable → pushes status data immediately to HA
 - When unreachable → falls back to the Tuya cloud at 60 s intervals automatically
 - Resumes local polling instantly the moment the lock responds again — no restart required
 - If both local and cloud fail, the last known state is kept so entities stay available
@@ -140,10 +142,10 @@ Once configured, the following entities are created under your lock device:
 
 | Entity | Description |
 |---|---|
-| `sensor.battery` | Battery level (%) |
-| `sensor.fingerprint_unlocks` | Cumulative fingerprint unlock count |
-| `sensor.password_unlocks` | Cumulative password unlock count |
-| `sensor.card_unlocks` | Cumulative card unlock count |
+| `sensor.battery` | Battery level (%) — raw value from device |
+| `sensor.last_fingerprint_unlock` | Code number of the fingerprint used (or name if assigned) |
+| `sensor.last_password_unlock` | Code number of the password used (or name if assigned) |
+| `sensor.last_card_unlock` | Code number of the card used (or name if assigned) |
 | `sensor.app_unlocks` | Cumulative app unlock count |
 | `sensor.temporary_code_unlocks` | Cumulative temporary code unlock count |
 | `sensor.pending_unlock_requests` | Number of pending unlock requests |
@@ -153,7 +155,7 @@ Once configured, the following entities are created under your lock device:
 
 | Entity | Description |
 |---|---|
-| `binary_sensor.doorbell` | On when doorbell is pressed |
+| `binary_sensor.doorbell` | On when doorbell is pressed — **automatically resets to Off after 1 second** |
 | `binary_sensor.deadbolt_reverse_lock` | On when deadbolt is engaged |
 | `binary_sensor.duress_hijack_alert` | On when a duress/hijack event is detected |
 | `binary_sensor.normally_open_mode` | On when lock is held in passage mode |
@@ -166,6 +168,46 @@ Once configured, the following entities are created under your lock device:
 | `lock.door_lock` | Controls passage mode (hold open / release) |
 
 > **Note:** The lock entity controls the `normal_open_switch` data point (passage/hold-open mode). This is not a remote unlock — it holds the lock open for hands-free access or closes it to normal latching mode.
+
+---
+
+## Credential Names
+
+The lock returns a **code number** each time a fingerprint, password, or card is used to unlock — this is the ID of the stored credential, not a counter.
+
+You can assign a friendly name to each code so the sensor shows the person's name instead of a raw number.
+
+### How to configure names
+
+1. Go to **Settings → Devices & Services → Tuya Lock Monitor → Configure**
+2. In the **Fingerprint code names**, **Password code names**, or **Card code names** fields, enter your mappings:
+
+   ```
+   1=Dad, 2=Mum, 3=Guest
+   ```
+
+   Separate entries with commas. Each entry is `<code>=<name>`.
+
+3. Click **Submit** — the sensor states update immediately.
+
+### Example
+
+If fingerprint code `2` belongs to "Mum":
+- Before: `sensor.last_fingerprint_unlock` = `2`
+- After:  `sensor.last_fingerprint_unlock` = `Mum`
+
+The raw code number is always available as the `code` attribute on the sensor, so automations can use either the name or the code:
+
+```yaml
+trigger:
+  - platform: state
+    entity_id: sensor.last_fingerprint_unlock
+condition:
+  - condition: template
+    value_template: "{{ trigger.to_state.attributes.code == 2 }}"
+```
+
+> **Note:** Each unlock type (fingerprint, password, card) has its own independent set of codes. Code `1` for fingerprints may refer to a different person than code `1` for passwords.
 
 ---
 

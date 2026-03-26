@@ -14,12 +14,15 @@ from homeassistant.helpers.selector import SelectSelector, SelectSelectorConfig,
 from .const import (
     CONF_ACCESS_ID,
     CONF_ACCESS_SECRET,
+    CONF_CARD_NAMES,
     CONF_DEVICE_ID,
     CONF_ENDPOINT,
+    CONF_FINGERPRINT_NAMES,
     CONF_LOCAL_IP,
     CONF_LOCAL_KEY,
     CONF_LOCAL_VERSION,
     CONF_MODE,
+    CONF_PASSWORD_NAMES,
     DEFAULT_ENDPOINT,
     DEFAULT_LOCAL_VERSION,
     DOMAIN,
@@ -333,7 +336,7 @@ class TuyaLockMonitorOptionsFlow(config_entries.OptionsFlow):
             return self.async_create_entry(title="", data=user_input)
 
         if mode == MODE_LOCAL:
-            # Local-only: allow updating local key, IP, and version
+            # Local-only: allow updating local key, IP, version, and name mappings
             current_key = self._entry.options.get(
                 CONF_LOCAL_KEY, self._entry.data.get(CONF_LOCAL_KEY, "")
             )
@@ -343,6 +346,15 @@ class TuyaLockMonitorOptionsFlow(config_entries.OptionsFlow):
             current_version = self._entry.options.get(
                 CONF_LOCAL_VERSION,
                 self._entry.data.get(CONF_LOCAL_VERSION, DEFAULT_LOCAL_VERSION),
+            )
+            current_fp_names = self._entry.options.get(
+                CONF_FINGERPRINT_NAMES, self._entry.data.get(CONF_FINGERPRINT_NAMES, "")
+            )
+            current_pw_names = self._entry.options.get(
+                CONF_PASSWORD_NAMES, self._entry.data.get(CONF_PASSWORD_NAMES, "")
+            )
+            current_card_names = self._entry.options.get(
+                CONF_CARD_NAMES, self._entry.data.get(CONF_CARD_NAMES, "")
             )
             schema = vol.Schema(
                 {
@@ -358,16 +370,28 @@ class TuyaLockMonitorOptionsFlow(config_entries.OptionsFlow):
                             mode=SelectSelectorMode.LIST,
                         )
                     ),
+                    vol.Optional(CONF_FINGERPRINT_NAMES, default=current_fp_names): str,
+                    vol.Optional(CONF_PASSWORD_NAMES, default=current_pw_names): str,
+                    vol.Optional(CONF_CARD_NAMES, default=current_card_names): str,
                 }
             )
         else:
-            # Cloud mode: allow updating optional local IP and version
+            # Cloud mode: allow updating local IP, version, and name mappings
             current_ip = self._entry.options.get(
                 CONF_LOCAL_IP, self._entry.data.get(CONF_LOCAL_IP, "")
             )
             current_version = self._entry.options.get(
                 CONF_LOCAL_VERSION,
                 self._entry.data.get(CONF_LOCAL_VERSION, DEFAULT_LOCAL_VERSION),
+            )
+            current_fp_names = self._entry.options.get(
+                CONF_FINGERPRINT_NAMES, self._entry.data.get(CONF_FINGERPRINT_NAMES, "")
+            )
+            current_pw_names = self._entry.options.get(
+                CONF_PASSWORD_NAMES, self._entry.data.get(CONF_PASSWORD_NAMES, "")
+            )
+            current_card_names = self._entry.options.get(
+                CONF_CARD_NAMES, self._entry.data.get(CONF_CARD_NAMES, "")
             )
             schema = vol.Schema(
                 {
@@ -382,6 +406,9 @@ class TuyaLockMonitorOptionsFlow(config_entries.OptionsFlow):
                             mode=SelectSelectorMode.LIST,
                         )
                     ),
+                    vol.Optional(CONF_FINGERPRINT_NAMES, default=current_fp_names): str,
+                    vol.Optional(CONF_PASSWORD_NAMES, default=current_pw_names): str,
+                    vol.Optional(CONF_CARD_NAMES, default=current_card_names): str,
                 }
             )
 

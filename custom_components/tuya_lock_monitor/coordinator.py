@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import aiohttp
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -21,15 +21,11 @@ from .const import (
     CODE_TO_DPS,
     DOMAIN,
     DPS_TO_CODE,
-    LOCAL_POLL_INTERVAL,
     PING_INTERVAL,
     UPDATE_INTERVAL,
 )
 
 _LOGGER = logging.getLogger(__name__)
-
-# Tuya local protocol port used for TCP-ping reachability checks
-TUYA_LOCAL_PORT = 6668
 
 
 class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -71,6 +67,9 @@ class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._ping_task: asyncio.Task | None = None
         self._last_contact: datetime | None = None
 
+        # Doorbell auto-reset handle (set doorbell back to False after 1 s)
+        self._doorbell_reset_unsub: object | None = None
+
         # Cloud state
         self._cached_meta: dict[str, Any] = {}
         self._last_meta_refresh: float = 0.0
@@ -111,19 +110,26 @@ class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.debug("[TuyaPing] Ping loop stopped")
 
     async def _ping_loop(self) -> None:
-        """Ping the device every PING_INTERVAL seconds.
+        """Status-as-ping loop: call tinytuya status() every ~1 s.
 
-        When reachable and LOCAL_POLL_INTERVAL has elapsed, do a full
-        tinytuya status poll and push the result to listeners immediately via
-        async_set_updated_data(). When unreachable, the next scheduled
-        _async_update_data() call will use cloud fallback.
+        IMPORTANT: a raw TCP ping consumes the device's single Tuya protocol
+        session per wake cycle, leaving status() unable to connect afterwards.
+        Using status() directly serves as both reachability check and data fetch.
+
+        Timing (matching tuya_probe.py):
+          offline: ~0.6 s per attempt (2 × 0.3 s timeout) + 0.2 s sleep ≈ 0.8 s cadence
+          online:  ~0.1 s per attempt + 0.2 s sleep ≈ 0.3 s cadence
         """
         while True:
-            await asyncio.sleep(PING_INTERVAL)
+            reachable = False
+            status: dict[str, Any] = {}
             try:
-                reachable = await self._ping_local()
+                status = await self._local_get_status()
+                reachable = True
             except asyncio.CancelledError:
                 return
+            except Exception:  # noqa: BLE001
+                pass
 
             if reachable and not self._local_reachable:
                 _LOGGER.info("[TuyaPing] Device back online at %s", self._local_ip)
@@ -132,46 +138,23 @@ class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             self._local_reachable = reachable
 
-            if not reachable:
-                continue
+            if reachable:
+                try:
+                    self._last_local_poll = time.time()
+                    merged = self._merge_local_status(status)
+                    result = self._build_result(
+                        merged,
+                        "local" if self._cloud_enabled else "local_only",
+                    )
+                    self._last_contact = dt_util.utcnow()
+                    self.async_set_updated_data(result)
+                    _LOGGER.debug("[TuyaPing] Local poll OK — pushed to listeners")
+                except asyncio.CancelledError:
+                    return
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.warning("[TuyaPing] Reachable but push failed: %s", err)
 
-            # Reachable — poll if enough time has elapsed since last poll
-            if (time.time() - self._last_local_poll) < LOCAL_POLL_INTERVAL:
-                continue
-
-            try:
-                status = await self._local_get_status()
-                self._last_local_poll = time.time()
-                merged = self._merge_local_status(status)
-                result = self._build_result(
-                    merged,
-                    "local" if self._cloud_enabled else "local_only",
-                )
-                self._last_contact = dt_util.utcnow()
-                self.async_set_updated_data(result)
-                _LOGGER.debug("[TuyaPing] Local poll OK — pushed to listeners")
-            except asyncio.CancelledError:
-                return
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.warning("[TuyaPing] Reachable but poll failed: %s", err)
-                # Don't clear _local_reachable — ping still works; poll might
-                # succeed next cycle (e.g. a transient DPS read error)
-
-    async def _ping_local(self) -> bool:
-        """Return True if the device responds on port 6668 within 0.5 s."""
-        try:
-            _, writer = await asyncio.wait_for(
-                asyncio.open_connection(self._local_ip, TUYA_LOCAL_PORT),
-                timeout=0.5,
-            )
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except Exception:  # noqa: BLE001
-                pass
-            return True
-        except Exception:  # noqa: BLE001
-            return False
+            await asyncio.sleep(0.2 if reachable else 0.8)
 
     # ------------------------------------------------------------------
     # Signing helpers
@@ -330,8 +313,10 @@ class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 address=local_ip,
                 local_key=local_key,
                 version=version,
+                connection_timeout=0.3,
+                connection_retry_limit=1,
+                connection_retry_delay=0,
             )
-            d.set_socketTimeout(5)
             return d.status()
 
         result: dict = await self.hass.async_add_executor_job(_sync_fetch)
@@ -375,10 +360,33 @@ class TuyaLockCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self.hass.async_add_executor_job(_sync_send)
 
     # ------------------------------------------------------------------
-    # Helpers
+    # Doorbell auto-reset
+    # ------------------------------------------------------------------
+
+    def _schedule_doorbell_reset(self) -> None:
+        """Cancel any pending doorbell reset and schedule a new one 1 s from now."""
+        if self._doorbell_reset_unsub is not None:
+            self._doorbell_reset_unsub()  # type: ignore[operator]
+            self._doorbell_reset_unsub = None
+        self._doorbell_reset_unsub = self.hass.async_call_later(
+            1, self._async_clear_doorbell
+        )
+
+    @callback
+    def _async_clear_doorbell(self, _now: object = None) -> None:
+        """Reset doorbell to False in coordinator data after 1 second."""
+        self._doorbell_reset_unsub = None
+        if self.data and self.data.get("status", {}).get("doorbell"):
+            new_status = {**self.data["status"], "doorbell": False}
+            new_data = {**self.data, "status": new_status}
+            self.async_set_updated_data(new_data)
+            _LOGGER.debug("[TuyaDoorbell] Doorbell reset to False")
+
     # ------------------------------------------------------------------
 
     def _build_result(self, status: dict[str, Any], mode: str) -> dict[str, Any]:
+        if status.get("doorbell"):
+            self._schedule_doorbell_reset()
         return {
             "device_id": self._device_id,
             "name": self._cached_meta.get("name", "Tuya Lock"),

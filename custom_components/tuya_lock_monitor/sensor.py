@@ -1,7 +1,7 @@
 """Sensors for Tuya Lock Monitor."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -18,13 +18,35 @@ from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import (
+    CONF_CARD_NAMES,
+    CONF_FINGERPRINT_NAMES,
+    CONF_PASSWORD_NAMES,
+    DOMAIN,
+)
 from .coordinator import TuyaLockCoordinator
+
+
+def _parse_name_map(raw: str) -> dict[str, str]:
+    """Parse a '1=Dad, 2=Mum, 3=Guest' string into a {code: name} dict."""
+    result: dict[str, str] = {}
+    for part in raw.split(","):
+        part = part.strip()
+        if "=" in part:
+            code, _, name = part.partition("=")
+            code = code.strip()
+            name = name.strip()
+            if code:
+                result[code] = name
+    return result
 
 
 @dataclass(frozen=True, kw_only=True)
 class TuyaLockSensorDescription(SensorEntityDescription):
     status_key: str = ""
+    # If set, the sensor looks up a user-defined code→name mapping from this
+    # entry option key and shows the name (or raw code if no name is assigned).
+    names_conf_key: str | None = None
 
 
 SENSORS: tuple[TuyaLockSensorDescription, ...] = (
@@ -38,24 +60,24 @@ SENSORS: tuple[TuyaLockSensorDescription, ...] = (
     ),
     TuyaLockSensorDescription(
         key="unlock_fingerprint",
-        name="Fingerprint Unlocks",
+        name="Last Fingerprint Unlock",
         status_key="unlock_fingerprint",
         icon="mdi:fingerprint",
-        state_class=SensorStateClass.TOTAL_INCREASING,
+        names_conf_key=CONF_FINGERPRINT_NAMES,
     ),
     TuyaLockSensorDescription(
         key="unlock_password",
-        name="Password Unlocks",
+        name="Last Password Unlock",
         status_key="unlock_password",
         icon="mdi:form-textbox-password",
-        state_class=SensorStateClass.TOTAL_INCREASING,
+        names_conf_key=CONF_PASSWORD_NAMES,
     ),
     TuyaLockSensorDescription(
         key="unlock_card",
-        name="Card Unlocks",
+        name="Last Card Unlock",
         status_key="unlock_card",
         icon="mdi:card-account-details",
-        state_class=SensorStateClass.TOTAL_INCREASING,
+        names_conf_key=CONF_CARD_NAMES,
     ),
     TuyaLockSensorDescription(
         key="unlock_app",
@@ -114,6 +136,7 @@ class TuyaLockSensor(CoordinatorEntity[TuyaLockCoordinator], SensorEntity):
     ) -> None:
         super().__init__(coordinator)
         self.entity_description = description
+        self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
@@ -126,9 +149,32 @@ class TuyaLockSensor(CoordinatorEntity[TuyaLockCoordinator], SensorEntity):
     def native_value(self) -> Any:
         if self.coordinator.data is None:
             return None
-        return self.coordinator.data["status"].get(
-            self.entity_description.status_key
-        )
+        raw = self.coordinator.data["status"].get(self.entity_description.status_key)
+        if raw is None:
+            return None
+        names_key = self.entity_description.names_conf_key
+        if names_key:
+            raw_str = str(raw)
+            name_map = _parse_name_map(
+                self._entry.options.get(names_key)
+                or self._entry.data.get(names_key)
+                or ""
+            )
+            return name_map.get(raw_str, raw_str)
+        return raw
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Include raw code number as attribute when a name mapping is active."""
+        if self.coordinator.data is None:
+            return None
+        names_key = self.entity_description.names_conf_key
+        if not names_key:
+            return None
+        raw = self.coordinator.data["status"].get(self.entity_description.status_key)
+        if raw is None:
+            return None
+        return {"code": int(raw) if str(raw).isdigit() else raw}
 
     @property
     def available(self) -> bool:

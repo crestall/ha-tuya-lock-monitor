@@ -60,11 +60,14 @@
     "step": {
       "init": {
         "title": "Tuya Lock Monitor — Settings",
-        "description": "Update local connection settings. For cloud mode, enter the lock's LAN IP to enable fast local polling (15s). Leave blank for cloud-only (60s).",
+        "description": "Update local connection settings and credential name labels.\n\n**Name mappings** (optional): Assign friendly names to each stored credential code so sensors show the person's name instead of a number. Format: `1=Dad, 2=Mum, 3=Guest` — separate entries with commas, code and name separated by `=`.\n\nFor cloud mode, enter the lock's LAN IP to enable fast local polling (15s). Leave blank for cloud-only (60s).",
         "data": {
           "local_key": "Local key (update if device was reset and re-paired)",
           "local_ip": "Lock LAN IP address",
-          "local_version": "Protocol version"
+          "local_version": "Protocol version",
+          "fingerprint_names": "Fingerprint code names (e.g. 1=Dad, 2=Mum)",
+          "password_names": "Password code names (e.g. 1=Front door code, 2=Guest pin)",
+          "card_names": "Card code names (e.g. 1=Blue card, 2=Key fob)"
         }
       }
     }

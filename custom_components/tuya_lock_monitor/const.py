@@ -11,6 +11,11 @@ CONF_LOCAL_KEY = "local_key"
 CONF_LOCAL_VERSION = "local_version"
 CONF_MODE = "mode"
 
+# User-defined code → name mappings (stored in entry options as "1=Dad, 2=Mum" strings)
+CONF_FINGERPRINT_NAMES = "fingerprint_names"
+CONF_PASSWORD_NAMES = "password_names"
+CONF_CARD_NAMES = "card_names"
+
 MODE_CLOUD = "cloud"
 MODE_LOCAL = "local"
 
