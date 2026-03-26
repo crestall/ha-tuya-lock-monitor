@@ -106,31 +106,31 @@ class TuyaWorker:
         import tinytuya
         d = tinytuya.Device(dev_id=device_id, address=ip,
                             local_key=local_key, version=version)
-        d.set_socketTimeout(4)
-        d.set_socketPersistent(True)
-
         combined: dict = {}
+        err = ""
         try:
-            # Initial status pull — usually returns only the last-changed DP
+            d.set_socketTimeout(3)
             r = d.status()
             if r and "dps" in r:
                 combined.update({str(k): v for k, v in r["dps"].items()})
+            elif r and "Error" in r:
+                err = r.get("Error", "unknown")
 
-            # Ask device to push ALL known DPS values
-            all_dps = [int(k) for k in DEVICE_MAPPING.keys()]
-            d.updatedps(all_dps)
-
-            # Read response packets until the device stops sending (≤2 s window)
-            d.set_socketTimeout(2)
-            deadline = time.time() + 3.0
-            while time.time() < deadline:
-                r = d.receive()
-                if not r:
-                    break
-                if "dps" in r:
+            if combined:
+                # Ask device to push all DPS values; no socketPersistent so a
+                # disconnect raises immediately and we exit via except
+                all_dps = [int(k) for k in DEVICE_MAPPING.keys()]
+                d.updatedps(all_dps)
+                d.set_socketTimeout(1)
+                deadline = time.time() + 2.0
+                while time.time() < deadline:
+                    r = d.receive()
+                    # tinytuya returns error dict on timeout — break on any non-dps response
+                    if not r or "Error" in r or "dps" not in r:
+                        break
                     combined.update({str(k): v for k, v in r["dps"].items()})
-        except Exception:
-            pass
+        except Exception as exc:
+            err = str(exc)
         finally:
             try:
                 d.close()
@@ -139,7 +139,7 @@ class TuyaWorker:
 
         if combined:
             return {"dps": combined}
-        return {"Error": "No DPS received from device"}
+        return {"Error": err or "No DPS received from device"}
 
     def set_value(self, ip: str, device_id: str, local_key: str,
                   version: float, dp: int, value: Any) -> dict:
