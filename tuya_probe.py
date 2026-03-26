@@ -102,28 +102,19 @@ class TuyaWorker:
         except OSError:
             return False
 
-    def get_status(self, ip: str, device_id: str, local_key: str, version: float,
-                    log_cb=None) -> dict:
+    def get_status(self, ip: str, device_id: str, local_key: str, version: float) -> dict:
         import tinytuya
-
-        def _log(msg, lvl="INFO"):
-            if log_cb:
-                log_cb(msg, lvl)
-
-        # Single fast attempt — live monitor already confirmed reachability via ping.
-        # This device (DL031HA) only sends DP 13 in its wake-up push; it does not
-        # respond to updatedps. Keeping the call fast (<1 s) so we catch the
-        # 5-second online window reliably.
+        # Single fast attempt — this device (DL031HA) only broadcasts DP 13 per
+        # wake; connection_timeout=1 + retry_limit=1 + retry_delay=0 keeps each
+        # failed attempt under ~2 s so the ~1 s poll loop stays responsive.
         d = tinytuya.Device(
             dev_id=device_id, address=ip, local_key=local_key, version=version,
             connection_timeout=1, connection_retry_limit=1, connection_retry_delay=0,
         )
         try:
             r = d.status()
-            _log(f"  [DBG] status() response: {r}")
             return r if r else {"Error": "Empty response"}
         except Exception as exc:
-            _log(f"  [DBG] status() exception: {exc}", "WARN")
             return {"Error": str(exc)}
         finally:
             try:
@@ -665,10 +656,8 @@ class TuyaProbeApp(tk.Tk):
         self._run_thread(self._refresh_thread, ip, device_id, local_key, version)
 
     def _refresh_thread(self, ip, device_id, local_key, version):
-        def _log(msg, lvl="INFO"):
-            self.after(0, self._log, msg, lvl)
         try:
-            result = self._worker.get_status(ip, device_id, local_key, version, log_cb=_log)
+            result = self._worker.get_status(ip, device_id, local_key, version)
             self.after(0, self._handle_status, result)
         except Exception as exc:
             self.after(0, self._log, f"Get status failed: {exc}", "ERROR")
@@ -764,12 +753,11 @@ class TuyaProbeApp(tk.Tk):
     def _live_ping_loop(self, ip: str, device_id: str, local_key: str, version: float):
         # Start as False so first successful status() always logs "Device online"
         was_reachable = False
-        self.after(0, self._log, f"  [DBG] status() poll loop started for {ip}", "INFO")
         while self._ping_running:
             t0 = time.time()
             # status() IS the ping — one TCP connection does both jobs, eliminating
             # the race between a raw ping succeeding and the protocol window closing.
-            result = self._worker.get_status(ip, device_id, local_key, version, log_cb=None)
+            result = self._worker.get_status(ip, device_id, local_key, version)
             ok = "dps" in result
             self.after(0, self._set_ping_label, ok)
 
