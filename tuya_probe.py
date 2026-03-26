@@ -116,7 +116,7 @@ class TuyaWorker:
         # 5-second online window reliably.
         d = tinytuya.Device(
             dev_id=device_id, address=ip, local_key=local_key, version=version,
-            connection_timeout=2, connection_retry_limit=0, connection_retry_delay=0,
+            connection_timeout=1, connection_retry_limit=0, connection_retry_delay=0,
         )
         try:
             r = d.status()
@@ -169,7 +169,6 @@ class TuyaProbeApp(tk.Tk):
         # live monitor state
         self._ping_running: bool = False
         self._ping_thread: threading.Thread | None = None
-        self._last_status_time: float = 0.0
         self._was_reachable: bool | None = None
 
         self._build_ui()
@@ -747,7 +746,6 @@ class TuyaProbeApp(tk.Tk):
             return
         ip, device_id, local_key, version = conn
         self._ping_running = True
-        self._last_status_time = 0.0
         self._was_reachable = None
         self._ping_thread = threading.Thread(
             target=self._live_ping_loop,
@@ -755,7 +753,7 @@ class TuyaProbeApp(tk.Tk):
             daemon=True,
         )
         self._ping_thread.start()
-        self._log(f"Live Monitor ON  --  pinging {ip} every 1 s, status every {self.STATUS_POLL_INTERVAL} s", "INFO")
+        self._log(f"Live Monitor ON  --  status() polling {ip} every 1 s", "INFO")
 
     def _stop_live_monitor(self):
         self._ping_running = False
@@ -765,35 +763,29 @@ class TuyaProbeApp(tk.Tk):
 
     def _live_ping_loop(self, ip: str, device_id: str, local_key: str, version: float):
         while self._ping_running:
-            # ping first — no leading sleep so Live Monitor start and reconnects
-            # are acted on immediately without waiting a full second
-            ok = self._worker.ping(ip)
+            t0 = time.time()
+            # status() IS the ping — reuses the same TCP connection so there
+            # is no race between "port open" and "protocol ready".
+            # With connection_timeout=1 and retry_limit=0 this returns in
+            # ~0.1 s on success and ~1 s on failure — perfect 1 s loop cadence.
+            result = self._worker.get_status(ip, device_id, local_key, version, log_cb=None)
+            ok = "dps" in result
             self.after(0, self._set_ping_label, ok)
 
             # log only on state transitions
             if ok and not self._was_reachable:
-                if self._was_reachable is not None:  # suppress very first connect msg
+                if self._was_reachable is not None:
                     self.after(0, self._log, f"Device back online at {ip}", "OK")
-                # force immediate status fetch on (re)connect
-                self._last_status_time = 0.0
             elif not ok and self._was_reachable:
                 self.after(0, self._log, f"Device offline at {ip}", "WARN")
             self._was_reachable = ok
 
-            if ok and (time.time() - self._last_status_time) >= self.STATUS_POLL_INTERVAL:
-                self._last_status_time = time.time()
-                self.after(0, self._log, f"Fetching status from {ip} ...", "INFO")
-                def _log(msg, lvl="INFO"):
-                    self.after(0, self._log, msg, lvl)
-                try:
-                    result = self._worker.get_status(ip, device_id, local_key, version, log_cb=_log)
-                    self.after(0, self._handle_status, result)
-                except Exception as exc:
-                    self.after(0, self._log, f"Live status error: {exc}", "ERROR")
+            if ok:
+                self.after(0, self._handle_status, result)
 
-            # sleep at the end — preserves ~1 s cadence without delaying first/reconnect check
+            elapsed = time.time() - t0
             if self._ping_running:
-                time.sleep(1)
+                time.sleep(max(0.0, 1.0 - elapsed))
 
     # --------------------------------- status tree double-click
     def _on_status_double_click(self, _event):
