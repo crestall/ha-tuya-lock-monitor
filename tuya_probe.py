@@ -110,68 +110,26 @@ class TuyaWorker:
             if log_cb:
                 log_cb(msg, lvl)
 
-        _log(f"  [DBG] Connecting to {ip}:6668  v{version}")
+        # Single fast attempt — live monitor already confirmed reachability via ping.
+        # This device (DL031HA) only sends DP 13 in its wake-up push; it does not
+        # respond to updatedps. Keeping the call fast (<1 s) so we catch the
+        # 5-second online window reliably.
         d = tinytuya.Device(
             dev_id=device_id, address=ip, local_key=local_key, version=version,
-            connection_timeout=2, connection_retry_limit=1, connection_retry_delay=0,
+            connection_timeout=2, connection_retry_limit=0, connection_retry_delay=0,
         )
-        # socketPersistent keeps the TCP connection open after status() so that
-        # updatedps() can reuse the same socket; disable retries BEFORE updatedps
-        # so if the device already closed the connection it fails fast (<0.1 s)
-        # instead of hanging 2 s trying to reconnect
-        d.set_socketPersistent(True)
-        combined: dict = {}
-        err = ""
         try:
-            _log("  [DBG] Calling status() ...")
             r = d.status()
-            _log(f"  [DBG] status() raw response: {r}")
-            if r and "dps" in r:
-                combined.update({str(k): v for k, v in r["dps"].items()})
-                _log(f"  [DBG] status() got {len(r['dps'])} DPS: {dict(r['dps'])}")
-            elif r:
-                err = r.get("Error", "unknown error")
-                _log(f"  [DBG] status() error: {err}", "WARN")
-
-            if combined:
-                d.connection_retry_limit = 0
-                d.retry = False
-                all_dps = [int(k) for k in DEVICE_MAPPING.keys()]
-                _log(f"  [DBG] Sending updatedps({all_dps}) ...")
-                t_upd = time.time()
-                try:
-                    d.updatedps(all_dps)
-                except Exception as upd_exc:
-                    _log(f"  [DBG] updatedps() raised in {time.time()-t_upd:.2f}s: {upd_exc}", "WARN")
-                _log(f"  [DBG] updatedps() sent in {time.time()-t_upd:.2f}s -- now reading responses")
-                d.set_socketTimeout(1)
-                deadline = time.time() + 1.5
-                pkt_count = 0
-                while time.time() < deadline:
-                    t0 = time.time()
-                    r = d.receive()
-                    _log(f"  [DBG] receive() pkt {pkt_count+1} in {time.time()-t0:.2f}s: {r}")
-                    if not r or "Error" in r or "dps" not in r:
-                        _log("  [DBG] receive() loop ended")
-                        break
-                    pkt_count += 1
-                    combined.update({str(k): v for k, v in r["dps"].items()})
-                _log(f"  [DBG] done - {pkt_count} extra pkt(s), total DPS: {len(combined)}")
-            else:
-                _log("  [DBG] Skipping updatedps (no DPS from status())")
+            _log(f"  [DBG] status() response: {r}")
+            return r if r else {"Error": "Empty response"}
         except Exception as exc:
-            _log(f"  [DBG] Exception: {exc}", "WARN")
-            if not combined:
-                err = str(exc)
+            _log(f"  [DBG] status() exception: {exc}", "WARN")
+            return {"Error": str(exc)}
         finally:
             try:
                 d.close()
             except Exception:
                 pass
-
-        if combined:
-            return {"dps": combined}
-        return {"Error": err or "No DPS received from device"}
 
     def set_value(self, ip: str, device_id: str, local_key: str,
                   version: float, dp: int, value: Any) -> dict:
@@ -724,8 +682,10 @@ class TuyaProbeApp(tk.Tk):
         if not dps:
             self._log(f"No DPS in response: {result}", "WARN")
             return
-        self._last_dps = {str(k): v for k, v in dps.items()}
-        self._log(f"Status OK -- {len(dps)} DPS values", "OK")
+        new_dps = {str(k): v for k, v in dps.items()}
+        merged = len(new_dps) - len([k for k in new_dps if k not in self._last_dps])
+        self._last_dps.update(new_dps)
+        self._log(f"Status OK -- {len(new_dps)} new DPS, {len(self._last_dps)} total accumulated", "OK")
         self._populate_status_tree(self._last_dps)
         self._sync_fn_controls(self._last_dps)
 
