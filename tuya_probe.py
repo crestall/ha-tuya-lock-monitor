@@ -104,12 +104,11 @@ class TuyaWorker:
 
     def get_status(self, ip: str, device_id: str, local_key: str, version: float) -> dict:
         import tinytuya
-        # Single fast attempt — this device (DL031HA) only broadcasts DP 13 per
-        # wake; connection_timeout=1 + retry_limit=1 + retry_delay=0 keeps each
-        # failed attempt under ~2 s so the ~1 s poll loop stays responsive.
+        # Called only after ping() confirms the device is up — single attempt,
+        # short timeout, no retries so we return in <1 s either way.
         d = tinytuya.Device(
             dev_id=device_id, address=ip, local_key=local_key, version=version,
-            connection_timeout=1, connection_retry_limit=1, connection_retry_delay=0,
+            connection_timeout=2, connection_retry_limit=0, connection_retry_delay=0,
         )
         try:
             r = d.status()
@@ -751,29 +750,33 @@ class TuyaProbeApp(tk.Tk):
         self._log("Live Monitor OFF", "INFO")
 
     def _live_ping_loop(self, ip: str, device_id: str, local_key: str, version: float):
-        # Start as False so first successful status() always logs "Device online"
+        # Strategy: fast TCP ping (0.3s timeout) polls every ~0.5s so we detect
+        # the 5-second online window even when a previous status() call took time.
+        # Only call the heavier get_status() once ping confirms the device is up.
         was_reachable = False
         stop_reason = "stopped normally"
         try:
             while self._ping_running:
                 t0 = time.time()
                 try:
-                    # status() IS the ping — one TCP connection does both jobs, eliminating
-                    # the race between a raw ping succeeding and the protocol window closing.
-                    result = self._worker.get_status(ip, device_id, local_key, version)
-                    ok = "dps" in result
+                    ok = self._worker.ping(ip, port=6668, timeout=0.3)
                     self.after(0, self._set_ping_label, ok)
 
-                    # log state transitions
                     if ok and not was_reachable:
+                        # Transition: offline -> online
                         self.after(0, self._log, f"Device online at {ip}", "OK")
+                        # Now fetch status — device just opened the protocol window
+                        result = self._worker.get_status(ip, device_id, local_key, version)
+                        if "dps" in result:
+                            self.after(0, self._handle_status, result)
+                        else:
+                            self.after(0, self._log,
+                                       f"Status fetch failed after ping: {result.get('Error')}", "WARN")
                     elif not ok and was_reachable:
                         self.after(0, self._log, f"Device offline at {ip}", "WARN")
+
                     was_reachable = ok
                     self._was_reachable = ok
-
-                    if ok:
-                        self.after(0, self._handle_status, result)
 
                 except Exception as exc:
                     stop_reason = f"loop iteration error: {exc}"
@@ -781,11 +784,11 @@ class TuyaProbeApp(tk.Tk):
 
                 elapsed = time.time() - t0
                 if self._ping_running:
-                    time.sleep(max(0.0, 1.0 - elapsed))
+                    # ~0.5s cadence: 0.3s max ping + top up to 0.5s
+                    time.sleep(max(0.0, 0.5 - elapsed))
         except Exception as exc:
             stop_reason = f"fatal thread error: {exc}"
         finally:
-            # Always clean up and notify, even on unexpected crash
             if self._ping_running:
                 self._ping_running = False
                 self.after(0, self._live_var.set, False)
